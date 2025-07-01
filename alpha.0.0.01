@@ -1,0 +1,83 @@
+import ccxt
+import asyncio
+# *** FIX: Import from ccxt.async_support for async operations ***
+import ccxt.async_support as ccxt_async
+
+async def fetch_initial_data():
+    """
+    Fetches market and ticker data for BTC/USDT from Binance
+    using the asynchronous ccxt library and prints the details.
+    """
+    exchange_id = 'binance' # Starting with Binance
+
+    # --- Choose and initialize the async exchange ---
+    try:
+        # *** FIX: Get the exchange class from the async_support module ***
+        exchange_class = getattr(ccxt_async, exchange_id)
+        # Pass any necessary options, like enabling rate limiting which is crucial for bots
+        exchange = exchange_class({
+            'enableRateLimit': True,
+        })
+    except AttributeError:
+        print(f"Exchange '{exchange_id}' not found in ccxt.async_support. Make sure it's supported.")
+        return # Exit the function if the exchange is not recognized
+    except Exception as e:
+        print(f"Failed to initialize exchange '{exchange_id}': {type(e).__name__} - {e}")
+        return # Exit if initialization fails
+
+    print(f"Attempting to fetch markets and ticker for {exchange_id}...")
+
+    # --- Load markets and fetch ticker data ---
+    try:
+        # 1. Load markets for the exchange. This is an ASYNC operation.
+        #    'await' is correct here because exchange.load_markets() from ccxt_async returns an awaitable.
+        markets = await exchange.load_markets()
+        print(f"Markets successfully loaded for {exchange_id}.")
+
+        symbol_to_find = 'BTC/USDT'
+
+        # Check if the desired symbol exists in the loaded markets dictionary
+        if symbol_to_find in markets:
+            # Get market info for the specific symbol (this is just dictionary access, NO await needed)
+            market_info = markets[symbol_to_find]
+
+            # 2. Fetch the ticker data (bid/ask prices) for the specific symbol.
+            #    This is also an ASYNC operation, so 'await' is correct here.
+            ticker = await exchange.fetch_ticker(symbol_to_find)
+
+            # Now print the relevant information. 'ticker' and 'market_info' are dictionaries.
+            print(f"\n--- Data for {symbol_to_find} on {exchange_id} ---")
+            print(f"  Exchange's Native Symbol ID: {market_info.get('id', 'N/A')}")
+            print(f"  CCXT Standardized Base: {market_info.get('base', 'N/A')}")
+            print(f"  CCXT Standardized Quote: {market_info.get('quote', 'N/A')}")
+            print(f"  Current Bid Price: {ticker.get('bid', 'N/A')}")
+            print(f"  Current Ask Price: {ticker.get('ask', 'N/A')}")
+
+        else:
+            print(f"  Trading pair '{symbol_to_find}' not found on {exchange_id}.")
+
+    # --- Specific error handling for ccxt operations ---
+    except ccxt_async.NetworkError as e:
+        print(f"A network error occurred while connecting to {exchange_id}: {type(e).__name__} - {e}")
+        print("Please ensure you have a stable internet connection and that the exchange's API is reachable.")
+    except ccxt_async.ExchangeError as e:
+        print(f"An exchange-specific error occurred for {exchange_id}: {type(e).__name__} - {e}")
+    except Exception as e:
+        # Catch any other unexpected Python errors during the process
+        print(f"An unexpected Python error occurred during data fetching: {type(e).__name__} - {e}")
+
+    finally:
+        # *** Clean up the exchange connection after use ***
+        # This is important with async exchanges
+        if 'exchange' in locals() and exchange is not None:
+            await exchange.close() # This is an awaitable method too!
+            print(f"\nConnection to {exchange_id} closed.")
+
+
+# --- Main execution block ---
+# This is the standard Python way to run an async function from a script.
+if __name__ == "__main__":
+    print("Starting script...")
+    # asyncio.run() starts the event loop and runs the top-level async function fetch_initial_data.
+    asyncio.run(fetch_initial_data())
+    print("Script finished.")
