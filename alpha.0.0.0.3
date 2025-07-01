@@ -1,0 +1,138 @@
+import ccxt.async_support as ccxt_async
+import asyncio
+from collections import defaultdict
+import time  ### CHANGE: Import the time module
+
+# --- Configuration (No Changes) ---
+EXCHANGES_TO_CHECK = [
+    'binance', 'kucoin', 'bybit', 'gateio', 'kraken',
+    'coinbase', 'mexc', 'okx', 'htx', 'bitget'
+]
+SYMBOLS_TO_CHECK = [
+    'BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT',
+    'ADA/USDT', 'AVAX/USDT', 'LTC/USDT', 'LINK/USDT', 'MATIC/USDT'
+]
+DEFAULT_TAKER_FEE = 0.002
+
+# --- Helper functions (No Changes) ---
+
+async def load_markets_from_exchange(exchange, market_dict):
+    """Loads markets using a pre-existing exchange object."""
+    try:
+        market_dict[exchange.id] = await exchange.load_markets()
+    except Exception:
+        market_dict[exchange.id] = None
+
+async def fetch_all_tickers_from_exchange(exchange, symbols_on_exchange):
+    """Fetches all specified tickers in a single batch request."""
+    try:
+        tickers = await exchange.fetch_tickers(symbols=symbols_on_exchange)
+        return {'exchange': exchange.id, 'tickers': tickers}
+    except Exception as e:
+        return {'exchange': exchange.id, 'tickers': {}}
+
+
+# --- Main function with timing logic added ---
+async def find_arbitrage_opportunities():
+    """
+    Manages connection lifecycle and uses efficient batch fetching.
+    """
+    ### CHANGE: Record the start time right at the beginning.
+    start_time = time.time()
+    
+    # 1. Instantiate all exchange objects ONCE (No change)
+    exchanges = {
+        exchange_id: getattr(ccxt_async, exchange_id)({'enableRateLimit': True})
+        for exchange_id in EXCHANGES_TO_CHECK
+    }
+    
+    all_markets = {}
+    
+    try:
+        # 2. Load all market data (No change)
+        market_load_tasks = [
+            load_markets_from_exchange(ex, all_markets) for ex in exchanges.values()
+        ]
+        await asyncio.gather(*market_load_tasks)
+        print("Fee structures loaded for all exchanges.")
+
+        # 3. Create one fetch task per exchange (No change from previous version)
+        batch_fetch_tasks = []
+        for exchange_id, exchange_obj in exchanges.items():
+            if not all_markets.get(exchange_id):
+                continue
+            
+            symbols_on_this_exchange = [
+                s for s in SYMBOLS_TO_CHECK if s in all_markets[exchange_id]
+            ]
+            
+            if symbols_on_this_exchange:
+                task = fetch_all_tickers_from_exchange(exchange_obj, symbols_on_this_exchange)
+                batch_fetch_tasks.append(task)
+        
+        print(f"Scanning tickers using {len(batch_fetch_tasks)} batch API requests...")
+        batch_results = await asyncio.gather(*batch_fetch_tasks)
+
+        # Unpack the results (No change)
+        valid_tickers = []
+        for result in batch_results:
+            exchange_id = result['exchange']
+            for symbol, ticker in result['tickers'].items():
+                if ticker.get('bid') and ticker.get('ask'):
+                    valid_tickers.append({
+                        'exchange': exchange_id,
+                        'symbol': symbol,
+                        'bid': ticker.get('bid'),
+                        'ask': ticker.get('ask'),
+                        'timestamp': ticker.get('timestamp')
+                    })
+
+        # 4. Perform analysis (No change)
+        tickers_by_symbol = defaultdict(list)
+        for ticker in valid_tickers:
+            tickers_by_symbol[ticker['symbol']].append(ticker)
+        
+        all_calculated_opportunities = []
+        for symbol, tickers in tickers_by_symbol.items():
+            if len(tickers) < 2: continue
+            lowest_ask_exchange = min(tickers, key=lambda x: x['ask'])
+            highest_bid_exchange = max(tickers, key=lambda x: x['bid'])
+            low_ask, high_bid = lowest_ask_exchange['ask'], highest_bid_exchange['bid']
+            buy_exchange_id, sell_exchange_id = lowest_ask_exchange['exchange'], highest_bid_exchange['exchange']
+            try:
+                buy_market_data = all_markets.get(buy_exchange_id, {})
+                sell_market_data = all_markets.get(sell_exchange_id, {})
+                buy_fee = buy_market_data.get(symbol, {}).get('taker', DEFAULT_TAKER_FEE)
+                sell_fee = sell_market_data.get(symbol, {}).get('taker', DEFAULT_TAKER_FEE)
+            except (KeyError, TypeError):
+                buy_fee, sell_fee = DEFAULT_TAKER_FEE, DEFAULT_TAKER_FEE
+            cost_to_buy = low_ask * (1 + buy_fee)
+            revenue_from_sell = high_bid * (1 - sell_fee)
+            if cost_to_buy > 0:
+                net_profit_pct = ((revenue_from_sell / cost_to_buy) - 1) * 100
+                raw_spread_pct = ((high_bid / low_ask) - 1) * 100
+                all_calculated_opportunities.append({'symbol': symbol, 'buy_from': buy_exchange_id, 'sell_to': sell_exchange_id, 'buy_price': low_ask, 'sell_price': high_bid, 'net_profit_pct': net_profit_pct, 'raw_spread_pct': raw_spread_pct})
+
+        if not all_calculated_opportunities:
+            print("\nScan complete. No profitable arbitrage opportunities found after fees.")
+        else:
+            sorted_opportunities = sorted(all_calculated_opportunities, key=lambda x: x['net_profit_pct'], reverse=True)
+            print("\n--- Top 3 Opportunities (Sorted by NET Profit After Fees) ---")
+            for i, opp in enumerate(sorted_opportunities[:3]):
+                print(f"\n#{i+1}: {opp['symbol']}\n    Buy on:   {opp['buy_from']:<10} @ {opp['buy_price']}\n    Sell on:  {opp['sell_to']:<10} @ {opp['sell_price']}\n    Raw Spread: {opp['raw_spread_pct']:.4f}%\n    NET PROFIT: {opp['net_profit_pct']:.4f}%")
+
+        ### CHANGE: Calculate and print the elapsed time before closing connections.
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        print(f"\n---------------------------------------------------------")
+        print(f"Total time to find opportunities: {elapsed_time:.2f} seconds.")
+        print(f"---------------------------------------------------------")
+
+    finally:
+        # 5. Close all connections (No change)
+        print("\nClosing all exchange connections...")
+        await asyncio.gather(*(ex.close() for ex in exchanges.values()))
+        print("All connections closed.")
+
+if __name__ == "__main__":
+    asyncio.run(find_arbitrage_opportunities())
