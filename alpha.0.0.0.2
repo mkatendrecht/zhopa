@@ -1,0 +1,122 @@
+import ccxt.async_support as ccxt_async
+import asyncio
+from collections import defaultdict
+
+# --- Phase 1: Configuration ---
+EXCHANGES_TO_CHECK = ['binance', 'kraken', 'kucoin', 'gateio', 'bybit'] # Added one more for better odds
+SYMBOLS_TO_CHECK = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'LTC/USDT'] 
+MIN_PROFIT_THRESHOLD = 0.5 # We'll keep this to show if an opportunity is "good"
+
+async def fetch_ticker_data(exchange_id, symbol):
+    """
+    Fetches ticker data for a symbol from an exchange and returns a normalized dictionary.
+    Returns None on failure.
+    """
+    try:
+        exchange_class = getattr(ccxt_async, exchange_id)
+        # Added a timeout to prevent the script from hanging on a non-responsive exchange
+        exchange = exchange_class({
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'spot',
+            },
+        })
+        # Use fetchMarkets from the exchange instance to respect timeouts
+        markets = await exchange.load_markets()
+        if symbol in markets:
+            ticker = await exchange.fetch_ticker(symbol)
+            if ticker.get('bid') and ticker.get('ask'):
+                return {
+                    'exchange': exchange_id,
+                    'symbol': symbol,
+                    'bid': ticker.get('bid'),
+                    'ask': ticker.get('ask'),
+                    'timestamp': ticker.get('timestamp')
+                }
+        return None
+    except Exception as e:
+        # Silently fail, but you could log this for debugging
+        # print(f"Could not fetch {symbol} from {exchange_id}: {e}")
+        return None
+    finally:
+        if 'exchange' in locals() and hasattr(exchange, 'close'):
+            await exchange.close()
+
+async def find_arbitrage_opportunities():
+    """
+    Scans multiple symbols across multiple exchanges, and displays the top 3
+    opportunities by price spread, regardless of profitability.
+    """
+    tasks = []
+    for symbol in SYMBOLS_TO_CHECK:
+        for exchange_id in EXCHANGES_TO_CHECK:
+            tasks.append(fetch_ticker_data(exchange_id, symbol))
+
+    print(f"Starting scan of {len(SYMBOLS_TO_CHECK)} pairs across {len(EXCHANGES_TO_CHECK)} exchanges ({len(tasks)} total API calls)...")
+    
+    all_tickers = await asyncio.gather(*tasks)
+    valid_tickers = [ticker for ticker in all_tickers if ticker] # Simplified check
+
+    if not valid_tickers:
+        print("Could not fetch any valid ticker data.")
+        return
+
+    tickers_by_symbol = defaultdict(list)
+    for ticker in valid_tickers:
+        tickers_by_symbol[ticker['symbol']].append(ticker)
+        
+    # --- MODIFICATION STARTS HERE ---
+
+    # 1. Calculate the spread for ALL pairs, not just profitable ones
+    all_calculated_spreads = []
+    for symbol, tickers in tickers_by_symbol.items():
+        if len(tickers) < 2:
+            continue # Can't do arbitrage with only one exchange
+
+        lowest_ask_exchange = min(tickers, key=lambda x: x['ask'])
+        highest_bid_exchange = max(tickers, key=lambda x: x['bid'])
+        
+        low_ask = lowest_ask_exchange['ask']
+        high_bid = highest_bid_exchange['bid']
+
+        # If the best bid is lower than the best ask, it's not a valid opportunity to even consider
+        if high_bid < low_ask:
+            # We can still calculate the negative spread for observability
+            pass
+
+        profit_percentage = ((high_bid / low_ask) - 1) * 100
+
+        all_calculated_spreads.append({
+            'symbol': symbol,
+            'buy_from': lowest_ask_exchange['exchange'],
+            'sell_to': highest_bid_exchange['exchange'],
+            'buy_price': low_ask,
+            'sell_price': high_bid,
+            'spread_pct': profit_percentage
+        })
+
+    # 2. Check if we found any spreads to analyze
+    if not all_calculated_spreads:
+        print("\nScan complete. No pairs were found on more than one exchange.")
+        return
+
+    # 3. Sort all found spreads by percentage, descending
+    sorted_spreads = sorted(all_calculated_spreads, key=lambda x: x['spread_pct'], reverse=True)
+    
+    # 4. Display the top 3
+    print(f"\n--- Top 3 Price Spreads Found (Target Profit: {MIN_PROFIT_THRESHOLD}%) ---")
+    print("(Note: These are raw spreads and do not include fees.)\n")
+
+    for i, opp in enumerate(sorted_spreads[:3]):
+        # Add a visual indicator if it meets your threshold
+        meets_threshold = "YES" if opp['spread_pct'] > MIN_PROFIT_THRESHOLD else "NO"
+
+        print(f"#{i+1}: {opp['symbol']}")
+        print(f"    Buy on:  {opp['buy_from']:<10} @ {opp['buy_price']}")
+        print(f"    Sell on: {opp['sell_to']:<10} @ {opp['sell_price']}")
+        print(f"    Spread:  {opp['spread_pct']:.4f}%")
+        print(f"    Meets Threshold? {meets_threshold}\n")
+
+# --- Main execution block ---
+if __name__ == "__main__":
+    asyncio.run(find_arbitrage_opportunities())
