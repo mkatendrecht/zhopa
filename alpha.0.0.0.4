@@ -1,0 +1,223 @@
+import asyncio
+import ccxt
+import time
+from collections import defaultdict
+import ccxt.async_support as ccxt_async
+
+# --- Configuration ---
+EXCHANGES_TO_CHECK = ['binance', 'kucoin', 'bybit', 'gateio', 'mexc', 'okx']
+SYMBOLS_TO_CHECK = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT', 'XRP/USDT', 'DOGE/USDT']
+PROFIT_THRESHOLD = 0.2  # In percentage, for instant alerts
+REPORT_INTERVAL = 60    # Interval in seconds for the periodic top-3 report
+
+# --- MarketDataManager Class ---
+class MarketDataManager:
+    def __init__(self, symbols, profit_threshold):
+        self.symbols_to_watch = symbols
+        self.profit_threshold = profit_threshold
+        self.tickers = defaultdict(dict)
+        self.markets = {}
+        self.lock = asyncio.Lock()
+        
+        # --- MODIFICATION START ---
+        # This list will store all calculated opportunities (profit/loss) within an interval.
+        self.current_opportunities = []
+        # We still keep the last notification time for instant high-profit alerts.
+        self.last_alert_time = 0 
+        # --- MODIFICATION END ---
+
+
+    async def load_all_markets(self, exchanges):
+        print("Loading market data sequentially (for fees and symbol checks)...")
+        for ex_id, ex_obj in exchanges.items():
+            try:
+                await ex_obj.load_markets()
+                self.markets[ex_id] = ex_obj.markets
+                print(f"  - Successfully loaded markets for {ex_id.upper()}")
+            except Exception as e:
+                print(f"  - FAILED to load markets for {ex_id.upper()}: {type(e).__name__} - {e}")
+        print("Market data loading complete.")
+
+    async def update_and_analyze(self, exchange_id, symbol, bid, ask):
+        async with self.lock:
+            self.tickers[symbol][exchange_id] = {'bid': bid, 'ask': ask, 'exchange': exchange_id}
+            
+            # Find the best buy (lowest ask) and sell (highest bid) across all exchanges for this symbol
+            tickers_for_symbol = list(self.tickers[symbol].values())
+            if len(tickers_for_symbol) < 2:
+                return
+
+            lowest_ask = min(tickers_for_symbol, key=lambda x: x['ask'])
+            highest_bid = max(tickers_for_symbol, key=lambda x: x['bid'])
+            
+            # An opportunity only exists between two different exchanges
+            if lowest_ask['exchange'] == highest_bid['exchange']:
+                return
+
+            # Calculate profit/loss after fees
+            buy_fee = self.markets.get(lowest_ask['exchange'], {}).get(symbol, {}).get('taker', 0.002) # Default fee 0.2%
+            sell_fee = self.markets.get(highest_bid['exchange'], {}).get(symbol, {}).get('taker', 0.002) # Default fee 0.2%
+            
+            cost_to_buy = lowest_ask['ask'] * (1 + buy_fee)
+            revenue_from_sell = highest_bid['bid'] * (1 - sell_fee)
+            
+            if cost_to_buy > 0:
+                net_profit_pct = ((revenue_from_sell / cost_to_buy) - 1) * 100
+
+                # --- MODIFICATION START ---
+                # 1. Store every calculated opportunity for the periodic report.
+                opportunity_data = {
+                    'symbol': symbol,
+                    'buy_exchange': lowest_ask['exchange'],
+                    'sell_exchange': highest_bid['exchange'],
+                    'buy_price': lowest_ask['ask'],
+                    'sell_price': highest_bid['bid'],
+                    'profit_pct': net_profit_pct
+                }
+                self.current_opportunities.append(opportunity_data)
+                # --- MODIFICATION END ---
+
+                # 2. Check for instant high-profit alerts (original functionality).
+                if net_profit_pct >= self.profit_threshold:
+                    # Prevent spamming alerts for the same opportunity
+                    if time.time() - self.last_alert_time > 30:
+                        print("\n" + "="*80)
+                        print(f"!!! ARBITRAGE ALERT - {time.ctime()} !!!")
+                        print(f"  Symbol:           {symbol}")
+                        print(f"  Buy on:           {lowest_ask['exchange'].upper()} @ {lowest_ask['ask']}")
+                        print(f"  Sell on:          {highest_bid['exchange'].upper()} @ {highest_bid['bid']}")
+                        print(f"  Estimated PROFIT: {net_profit_pct:.4f}% (after fees)")
+                        print("="*80 + "\n")
+                        self.last_alert_time = time.time()
+
+# --- Polling Task ---
+async def poll_tickers_for_exchange(manager, exchange):
+    symbols_on_exchange = [s for s in manager.symbols_to_watch if s in manager.markets.get(exchange.id, {})]
+    if not symbols_on_exchange:
+        print(f"INFO: No target symbols found on {exchange.id.upper()}. Skipping poller.")
+        return
+
+    print(f"Starting Ticker polling for: {exchange.id.upper()} ({len(symbols_on_exchange)} symbols)")
+    
+    while True:
+        try:
+            tickers = await exchange.fetch_tickers(symbols_on_exchange)
+            for symbol, ticker in tickers.items():
+                best_bid = ticker.get('bid')
+                best_ask = ticker.get('ask')
+                if best_bid is not None and best_ask is not None and best_ask > 0:
+                    await manager.update_and_analyze(exchange.id, symbol, best_bid, best_ask)
+            # Sleep between polling rounds to respect rate limits
+            await asyncio.sleep(exchange.rateLimit / 1000) # Use exchange-specific rate limit
+        except Exception as e:
+            # More specific error handling for fetch_tickers
+            if isinstance(e, ccxt.NotSupported):
+                 # Fallback to polling one by one if fetch_tickers is not supported
+                 await poll_tickers_one_by_one(manager, exchange, symbols_on_exchange)
+            else:
+                print(f"ERROR in {exchange.id.upper()} poller: {type(e).__name__} - {e}. Retrying in 15s...")
+                await asyncio.sleep(15)
+
+# Fallback poller for exchanges that don't support fetch_tickers
+async def poll_tickers_one_by_one(manager, exchange, symbols_on_exchange):
+    print(f"INFO: {exchange.id.upper()} does not support fetch_tickers. Switching to individual polling.")
+    while True: # This loop should also be managed within the main poller's error handling
+        try:
+            for symbol in symbols_on_exchange:
+                try:
+                    ticker = await exchange.fetch_ticker(symbol)
+                    best_bid = ticker.get('bid')
+                    best_ask = ticker.get('ask')
+                    if best_bid is not None and best_ask is not None and best_ask > 0:
+                        await manager.update_and_analyze(exchange.id, symbol, best_bid, best_ask)
+                except Exception as e:
+                    print(f"ERROR fetching {symbol} from {exchange.id.upper()}: {type(e).__name__} - {e}")
+            await asyncio.sleep(2) # 2 second delay between polling rounds
+        except Exception as e:
+            print(f"ERROR in {exchange.id.upper()} individual poller: {type(e).__name__} - {e}. Reconnecting in 15s...")
+            await asyncio.sleep(15)
+            # This break will cause the outer loop in poll_tickers_for_exchange to handle the reconnect logic
+            break
+
+
+# --- MODIFICATION: Heartbeat Task becomes a Periodic Report Task ---
+async def periodic_report_task(manager):
+    """
+    This task wakes up every REPORT_INTERVAL seconds, finds the top 3 best
+    opportunities (even if they are at a loss), prints them, and then clears
+    the list for the next reporting period.
+    """
+    while True:
+        await asyncio.sleep(REPORT_INTERVAL)
+        
+        async with manager.lock:
+            # Make a copy and clear the original list atomically
+            opportunities_to_report = list(manager.current_opportunities)
+            manager.current_opportunities.clear()
+
+        if not opportunities_to_report:
+            print(f"--- ({time.strftime('%H:%M:%S')}) Status: System running. No new market data in the last {REPORT_INTERVAL}s. ---")
+            continue
+
+        # Sort by profit percentage, descending
+        sorted_opportunities = sorted(opportunities_to_report, key=lambda x: x['profit_pct'], reverse=True)
+        
+        # Remove duplicates, keeping the one with the highest profit
+        unique_opportunities = {}
+        for op in sorted_opportunities:
+            key = (op['symbol'], op['buy_exchange'], op['sell_exchange'])
+            if key not in unique_opportunities:
+                unique_opportunities[key] = op
+
+        top_opportunities = list(unique_opportunities.values())[:3]
+
+        # --- Print the formatted report ---
+        print("\n" + "-"*35 + f" TOP 3 DIFFERENCES ({time.strftime('%H:%M:%S')}) " + "-"*35)
+        print(f"{'SYMBOL':<12} | {'BUY AT':<15} | {'SELL AT':<15} | {'PROFIT %':>10}")
+        print("-"*85)
+
+        for op in top_opportunities:
+            buy_info = f"{op['buy_exchange'].upper()} @ {op['buy_price']}"
+            sell_info = f"{op['sell_exchange'].upper()} @ {op['sell_price']}"
+            profit_str = f"{op['profit_pct']:>9.4f}%"
+            print(f"{op['symbol']:<12} | {buy_info:<15} | {sell_info:<15} | {profit_str}")
+        
+        print("-" * 85 + "\n")
+
+
+# --- Main Orchestrator ---
+async def main():
+    print("Initializing Crypto Arbitrage Monitor...")
+    manager = MarketDataManager(SYMBOLS_TO_CHECK, PROFIT_THRESHOLD)
+    exchanges = {
+        ex_id: getattr(ccxt_async, ex_id)({
+            'options': {'defaultType': 'spot'},
+            'enableRateLimit': True,
+        })
+        for ex_id in EXCHANGES_TO_CHECK
+    }
+    try:
+        await manager.load_all_markets(exchanges)
+        
+        # --- MODIFICATION: Start the periodic report task instead of the old heartbeat ---
+        tasks = [poll_tickers_for_exchange(manager, ex_obj) for ex_obj in exchanges.values()]
+        tasks.append(periodic_report_task(manager))
+        # --- MODIFICATION END ---
+        
+        print(f"\nStarting {len(exchanges)} exchange pollers. Monitoring for opportunities...")
+        print(f"An instant alert will be shown for profits > {PROFIT_THRESHOLD}%.")
+        print(f"A summary of the top 3 price differences will be shown every {REPORT_INTERVAL} seconds.")
+        print("Press Ctrl+C to stop the bot.")
+        
+        await asyncio.gather(*tasks)
+    finally:
+        print("\nClosing all exchange connections gracefully...")
+        close_tasks = [ex.close() for ex in exchanges.values()]
+        await asyncio.gather(*close_tasks, return_exceptions=True)
+        print("All resources released. Shutdown complete.")
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nShutdown signal received.")
