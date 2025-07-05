@@ -24,47 +24,51 @@ SYMBOLS_TO_CHECK = [
     'DOGE/USDT', 'DOGE/BUSD',
 ]
 
-PROFIT_THRESHOLD = 0.2  # In percentage, for instant alerts
+PROFIT_THRESHOLD = 0.15  # In percentage, for instant alerts
 REPORT_INTERVAL = 60    # Interval in seconds for the periodic report
 
-# --- NEW ASCII ART for Shutdown ---
+# --- ASCII ART for Shutdown ---
 ASCII_FAREWELL = r"""
-
-                                                                                                                                                
-                                                                                                                                                       
-                                                                                                                                                       
-                                                                                                                                                       
-                                                                                                                                                       
-                                                                                                                                                       
-                                                                                                                                                       
-                                                     $&&&&&&&&&&&&&&&&&&&&&&&&&&&.                                                                     
-                                             &&&&&&&&&&&&&$;               .$&&&&&x&&&:                                                                
-                                      &&&&&&&&&&&&$:   :..:X&&&&&&$Xx++++x$&x    &&&;&&&&&                                                             
-                               &&&&&&&&&&&&&       ;Xxx&&&&;:     .;+++;.    x&&x     x&&&&&&&                                                         
-                          &&&&&&&&&&&&      X&&&&X   :        X+;:.      .+x;.   +&:       $$&&&&&.                                                    
-         X&&&&&&&&&&+ &&&&&&&&&        &&&&&:     :.   $   ;  X:              ;$&&&&&X&x    x  x;&&&&;                                                 
-         &&.;    :&&&&&&&&      +Xx+;:+x       ::      +x+                             x$.     +&  :&&&&&&&&&&                                         
-         &&  ;&&+   ;&;               .$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$Xxxx;   ;&&&X; $$+      &&&&&&&&&&&&&&&&&&&&&&&&&                         
-         &$ ++   ::     +$&&&&x.                ;     .   .;+XXXX$$&&&&&&&&&&&&&&&&&&;    &&&:&&&&&&&X        &&&&&&&&&&&&&&&&& x&&                    
-      .&&& ;       x$x.        x&&&&&&&&&&.   &+ &&&                                  X&&&&;          .;+x+;                  &&&&&&&$                 
-      &&& x&&&&&&&&&+X+.    &&&&&X:.;+xX&&&&&; &&  &&  :.:;::::;;;;;;;;;;;;;;;;;++:          ...  ..         X&&&&&&&&&&&&.    xx.;+&&&&&&             
-      &                   &&&&              &&&  && &&+XXx+x+++++++xXXXXXXXXxxxxxxxx+;;;x$$$XXXXXxxx+:    x&&&&;   .:  :&&&&&&;   $+  ;&&&&&&&         
-      && +X&&&&&&&&&&&$;;&&&    $&x     x&;   &&x &&Xx   . .::...:.................::::::........:. ::  :&&&               :&&&;x  .$.    ;&&&&&:      
-      &&     .        ..&&;   $$  .&&&&x   &+   &&  .  :...:::....................................  +  $&&.    .   xx    :    &  :+:  :;  .$&  &&&X    
-      && &+            :&; : X: ;x+    :.;:  x   &$;;x$X;.::::::::::::.........:.................:.:; :&&   : &x+    :XX+.;;  &&.:xx$$X;:&&.;Xx  &&    
-    x&&;++x&&&&&&&x;+;:;& x ;; X+  :  :+  $&..;. $$ :.......               ....:::::::::::::::::..:x. x&  .. &X x  x:    $ x ; &; ..:;+x&&       &&    
-    X     +:   ;$&X    ;X X :: $   ;+ X: X XX .  :$ .:::.                                         :x  && ;  :& &+ ; .+:; x;; : X$ ..    +.$&&&$x &     
-    x&&: . ;&$;   x$:  ;x x .$ ;; ..&&&  ;.& : . :X      .$&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&$$Xx;..   &x +.  $.& .:X++ ; x ; ; +& .:::.:$     &&&&     
-      xx+&&&:      ;;:.:+ ;+ .x ;$+     :+x .  + ;+ .....                                          .: X+ ;+  .::     . .:+ . X XX       ; :;    +&     
-       :+x&&&&&$X+..+xx+;  +X. xx   ;;  .    ;x+ ;xxxx+x&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&&Xxx$$x+; .;+    .  ;; .  .  x+ xx+Xxxxx;. ...x&&&&     
-  :+++;.          .......   ;$x   ::;+:    :Xx:  .;;::..                                  ....::;;;;;;;.  .x$+    ;x+.    xX+  :X&&&&&&&&$Xx;.         
-  :                           x&&$.     +&&$:                             ...............::::::::::         .X&&;      $&&X                    . .::   
-  :++::.                         .X&&&&&;                                                                       +&&&&&$:             ::::;;;;::.:.::   
-    :;:x;:;;;;;;;;;;;;;;;;;;;:.        .::;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;::.        .:;;;;;:::.;+:;;;;;;;;;;;;:.   
-       .xx;::;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;+;;;;;;;;+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;++;::::;;;+++::;;++xXx.                  
-                                                                                                                                                       
-
-                                                    SHUTDOWN COMPLETE
+                                                                                                      
+                                                                                                            
+                                                 ZZZZZZZZZZ                                                 
+                                            ZXUSRRQQQQQQQQRRSUXZ                                            
+                                        YVSQQQQQQQQQQQQQQQQQQQQQQSVYZ                                       
+                                    ZZVQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQUZZ                                    
+                                   YRQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQRY                                   
+                                 XRQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQRX                                 
+                               ZTQQQQQQQQQQQQQQQQQQQQSRQQQQQQQQQQQQQQQQQQQQSZ                               
+                             ZXQQQQQQQQQQQQQQQQQQQQQRY ZTQRWURQQQQQQQQQQQQQQQXZ                             
+                             WQQQQQQQQQQQQQQQQQQQQQQTZ YQQUZ XQQQQQQQQQQQQQQQQW                             
+                           ZVQQQQQQQQQQQQQQQQV  ZZXWY ZUQQZ ZUQQQQQQQQQQQQQQQQQVZ                           
+                           XQQQQQQQQQQQQQQQQQXYZZ           ZTRQQQQQQQQQQQQQQQQQX                           
+                          ZRQQQQQQQQQQQQQQQQQQQQSZ            ZZYRQQQQQQQQQQQQQQRZ                          
+                         ZUQQQQQQQQQQQQQQQQQQQQQTZ    TQQRTWZ    ZXQQQQQQQQQQQQQQTZ                         
+                         ZSQQQQQQQQQQQQQQQQQQQQQX    YQQQQQQRX     UQQQQQQQQQQQQQRY                         
+                         XQQQQQQQQQQQQQQQQQQQQQSZ   ZUQQQQQQRX     UQQQQQQQQQQQQQQX                         
+                         WQQQQQQQQQQQQQQQQQQQQQW    ZYWUTSTVYZ    ZRQQQQQQQQQQQQQQW                         
+                         WQQQQQQQQQQQQQQQQQQQQUZ               ZYUQQQQQQQQQQQQQQQQV                         
+                         WQQQQQQQQQQQQQQQQQQQQUZ   ZTQQSVYZZ    ZSQQQQQQQQQQQQQQQQW                         
+                         XQQQQQQQQQQQQQQQQQQQQX    YQQQQQQQTZ    ZWQQQQQQQQQQQQQQQX                         
+                         YRQQQQQQQQQQQQQQQRQQTZ   ZUQQQQQQQQTZ    ZSQQQQQQQQQQQQQRY                         
+                         ZUQQQQQQQQQQQQQQW        YSQQQQQQQRY     ZRQQQQQQQQQQQQQTZ                         
+                          ZQQQQQQQQQQQQQTZ            ZZZZ       ZSQQQQQQQQQQQQQQZ                          
+                           XQQQQQQQQQQQQQQQQRRUZ  Z             ZTQQQQQQQQQQQQQQX                           
+                           ZVQQQQQQQQQQQQQQQQQVZ XQQVZ YWXXXXWVRQQQQQQQQQQQQQQQUZ                           
+                             WQQQQQQQQQQQQQQQQY ZTQQZ ZTQQQQQQQQQQQQQQQQQQQQQQV                             
+                             ZXQQQQQQQQQQQQQQQSUWRQU  YRQQQQQQQQQQQQQQQQQQQQQWZ                             
+                               ZSQQQQQQQQQQQQQQQQQQQQSSQQQQQQQQQQQQQQQQQQQQSZ                               
+                                 XRQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQRX                                 
+                                   YRQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQRY                                   
+                                    ZZUQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQUYZ                                    
+                                        YVSQQQQQQQQQQQQQQQQQQQQQQSVYZ                                       
+                                            ZXURRRQQQQQQQQRRRTXZ                                            
+                                                 ZZZZZZZZZZ                                                 
+                                                                                                            
+                                                                                                            
+                                                                                                            
+                                                                                                            
+                                    ---     SHUTDOWN COMPLETE       ---
 """
 
 # --- MarketDataManager Class ---
