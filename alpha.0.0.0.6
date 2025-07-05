@@ -1,0 +1,368 @@
+# All imports and configuration remain the same...
+import asyncio
+import ccxt
+import time
+from collections import defaultdict
+import ccxt.async_support as ccxt_async
+import os
+
+# --- Configuration ---
+EXCHANGES_TO_CHECK = [
+    'binance', 'kucoin', 'bybit', 'gateio', 'mexc', 'okx', 
+    'kraken', 'bingx', 'bitget', 'htx'
+]
+
+STABLECOINS = {'USDT', 'USDC', 'BUSD', 'TUSD', 'FDUSD', 'DAI'}
+
+# SYMBOLS_TO_CHECK is now REMOVED. We will generate it dynamically.
+
+PROFIT_THRESHOLD = 0.15
+REPORT_INTERVAL = 60
+MIN_EXCHANGES_FOR_SYMBOL = 2 # An asset must be on at least this many exchanges to be tracked.
+MIN_24H_VOLUME_USD = 50000
+
+
+# --- ASCII ART for Shutdown ---
+ASCII_FAREWELL = r"""
+                                                                                              
+                                                                                                            
+                                                 ZZZZZZZZZZ                                                 
+                                            ZXUSRRQQQQQQQQRRSUXZ                                            
+                                        YVSQQQQQQQQQQQQQQQQQQQQQQSVYZ                                       
+                                    ZZVQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQUZZ                                    
+                                   YRQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQRY                                   
+                                 XRQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQRX                                 
+                               ZTQQQQQQQQQQQQQQQQQQQQSRQQQQQQQQQQQQQQQQQQQQSZ                               
+                             ZXQQQQQQQQQQQQQQQQQQQQQRY ZTQRWURQQQQQQQQQQQQQQQXZ                             
+                             WQQQQQQQQQQQQQQQQQQQQQQTZ YQQUZ XQQQQQQQQQQQQQQQQW                             
+                           ZVQQQQQQQQQQQQQQQQV  ZZXWY ZUQQZ ZUQQQQQQQQQQQQQQQQQVZ                           
+                           XQQQQQQQQQQQQQQQQQXYZZ           ZTRQQQQQQQQQQQQQQQQQX                           
+                          ZRQQQQQQQQQQQQQQQQQQQQSZ            ZZYRQQQQQQQQQQQQQQRZ                          
+                         ZUQQQQQQQQQQQQQQQQQQQQQTZ    TQQRTWZ    ZXQQQQQQQQQQQQQQTZ                         
+                         ZSQQQQQQQQQQQQQQQQQQQQQX    YQQQQQQRX     UQQQQQQQQQQQQQRY                         
+                         XQQQQQQQQQQQQQQQQQQQQQSZ   ZUQQQQQQRX     UQQQQQQQQQQQQQQX                         
+                         WQQQQQQQQQQQQQQQQQQQQQW    ZYWUTSTVYZ    ZRQQQQQQQQQQQQQQW                         
+                         WQQQQQQQQQQQQQQQQQQQQUZ               ZYUQQQQQQQQQQQQQQQQV                         
+                         WQQQQQQQQQQQQQQQQQQQQUZ   ZTQQSVYZZ    ZSQQQQQQQQQQQQQQQQW                         
+                         XQQQQQQQQQQQQQQQQQQQQX    YQQQQQQQTZ    ZWQQQQQQQQQQQQQQQX                         
+                         YRQQQQQQQQQQQQQQQRQQTZ   ZUQQQQQQQQTZ    ZSQQQQQQQQQQQQQRY                         
+                         ZUQQQQQQQQQQQQQQW        YSQQQQQQQRY     ZRQQQQQQQQQQQQQTZ                         
+                          ZQQQQQQQQQQQQQTZ            ZZZZ       ZSQQQQQQQQQQQQQQZ                          
+                           XQQQQQQQQQQQQQQQQRRUZ  Z             ZTQQQQQQQQQQQQQQX                           
+                           ZVQQQQQQQQQQQQQQQQQVZ XQQVZ YWXXXXWVRQQQQQQQQQQQQQQQUZ                           
+                             WQQQQQQQQQQQQQQQQY ZTQQZ ZTQQQQQQQQQQQQQQQQQQQQQQV                             
+                             ZXQQQQQQQQQQQQQQQSUWRQU  YRQQQQQQQQQQQQQQQQQQQQQWZ                             
+                               ZSQQQQQQQQQQQQQQQQQQQQSSQQQQQQQQQQQQQQQQQQQQSZ                               
+                                 XRQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQRX                                 
+                                   YRQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQRY                                   
+                                    ZZUQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQUYZ                                    
+                                        YVSQQQQQQQQQQQQQQQQQQQQQQSVYZ                                       
+                                            ZXURRRQQQQQQQQRRRTXZ                                            
+                                                 ZZZZZZZZZZ                                                 
+                                                                                                            
+                                                                                                            
+                                                                                                            
+                                                                                                            
+                                          SHUTDOWN COMPLETE
+"""
+
+# MarketDataManager and other classes remain the same
+class MarketDataManager:
+    def __init__(self, symbols, profit_threshold):
+        self.symbols_to_watch = symbols
+        self.profit_threshold = profit_threshold
+        self.tickers_by_base = defaultdict(dict)
+        self.markets = {}
+        self.lock = asyncio.Lock()
+        self.current_opportunities = []
+        self.last_alert_time = 0 
+
+    async def load_all_markets(self, exchanges):
+        print("Loading market data sequentially (for fees and symbol checks)...")
+        all_markets = {}
+        for ex_id, ex_obj in exchanges.items():
+            try:
+                await ex_obj.load_markets()
+                self.markets[ex_id] = ex_obj.markets
+                all_markets[ex_id] = ex_obj.markets
+                print(f"  - Successfully loaded markets for {ex_id.upper()}")
+            except Exception as e:
+                print(f"  - FAILED to load markets for {ex_id.upper()}: {type(e).__name__} - {e}")
+        print("Market data loading complete.")
+        return all_markets
+
+    async def update_and_analyze(self, exchange_id, symbol, bid, ask):
+        try:
+            base, quote = symbol.split('/')
+        except ValueError:
+            return # Ignore malformed symbols
+        
+        # We only care about stablecoin pairs for this logic
+        if quote not in STABLECOINS:
+            return
+
+        async with self.lock:
+            # Store the latest ticker data
+            ticker_data = {'bid': bid, 'ask': ask, 'exchange': exchange_id, 'symbol': symbol}
+            self.tickers_by_base[base][(exchange_id, symbol)] = ticker_data
+            
+            # Get all known tickers for the current base asset (e.g., all BTC pairs)
+            tickers_for_base = list(self.tickers_by_base[base].values())
+            
+            # Need at least two different price points to compare
+            if len(tickers_for_base) < 2:
+                return
+
+            # Find the best places to buy (lowest ask) and sell (highest bid)
+            lowest_ask = min(tickers_for_base, key=lambda x: x['ask'])
+            highest_bid = max(tickers_for_base, key=lambda x: x['bid'])
+
+            # **SANITY CHECK**: A real opportunity cannot have a buy or sell price of zero.
+            # This filters out dead/illiquid markets that report a price of 0.
+            if lowest_ask['ask'] <= 0 or highest_bid['bid'] <= 0:
+                return
+
+            # If the best buy and sell are the same, it's just the spread on one exchange, not arbitrage.
+            if lowest_ask['exchange'] == highest_bid['exchange'] and lowest_ask['symbol'] == highest_bid['symbol']:
+                return
+
+            # Proceed with the profit calculation now that we know the prices are valid
+            buy_fee = self.markets.get(lowest_ask['exchange'], {}).get(lowest_ask['symbol'], {}).get('taker', 0.002)
+            sell_fee = self.markets.get(highest_bid['exchange'], {}).get(highest_bid['symbol'], {}).get('taker', 0.002)
+            
+            cost_to_buy = lowest_ask['ask'] * (1 + buy_fee)
+            revenue_from_sell = highest_bid['bid'] * (1 - sell_fee)
+
+            # This check is still a good fallback, but our new sanity check should catch most issues.
+            if cost_to_buy > 0:
+                net_profit_pct = ((revenue_from_sell / cost_to_buy) - 1) * 100
+                requires_swap = lowest_ask['symbol'].split('/')[1] != highest_bid['symbol'].split('/')[1]
+                
+                opportunity_data = {
+                    'base_symbol': base,
+                    'buy_symbol': lowest_ask['symbol'],
+                    'sell_symbol': highest_bid['symbol'],
+                    'buy_exchange': lowest_ask['exchange'],
+                    'sell_exchange': highest_bid['exchange'],
+                    'buy_price': lowest_ask['ask'],
+                    'sell_price': highest_bid['bid'],
+                    'profit_pct': net_profit_pct,
+                    'requires_swap': requires_swap
+                }
+
+                # Add to the list for the periodic report
+                self.current_opportunities.append(opportunity_data)
+                
+                # If it's a high-profit alert, show it immediately
+                if net_profit_pct >= self.profit_threshold:
+                    current_time = time.time()
+                    if current_time - self.last_alert_time > 30: # Avoid spamming alerts
+                        note = " (Note: Requires stablecoin swap)" if requires_swap else ""
+                        print("\n" + "="*80)
+                        print(f"!!! ARBITRAGE ALERT - {time.ctime()} !!!")
+                        print(f"  Asset:            {base}")
+                        print(f"  Buy on:           {lowest_ask['exchange'].upper()} as {lowest_ask['symbol']} @ {lowest_ask['ask']}")
+                        print(f"  Sell on:          {highest_bid['exchange'].upper()} as {highest_bid['symbol']} @ {highest_bid['bid']}")
+                        print(f"  Estimated PROFIT: {net_profit_pct:.4f}% (after fees){note}")
+                        print("="*80 + "\n")
+                        self.last_alert_time = current_time
+
+# All other functions (polling, reporting) are unchanged
+
+# --- NEW: Dynamic Symbol Discovery Function ---
+def discover_arbitrage_symbols(all_markets):
+    print("\nAnalyzing markets to find arbitrage opportunities...")
+    base_currency_map = defaultdict(list)
+    
+    # Step 1: Map all stablecoin markets by their base currency
+    for exchange, markets in all_markets.items():
+        if not markets: continue
+        for symbol, market_data in markets.items():
+            if market_data.get('spot', False) and market_data.get('active', False):
+                base = market_data.get('base')
+                quote = market_data.get('quote')
+                if base and quote and quote in STABLECOINS:
+                    base_currency_map[base].append({'exchange': exchange, 'symbol': symbol})
+                    
+    # Step 2: Filter for assets that are potential arbitrage candidates
+    arbitrage_symbols = set()
+    for base, markets in base_currency_map.items():
+        # Condition 1: The asset is listed on multiple exchanges
+        exchanges_for_base = {m['exchange'] for m in markets}
+        if len(exchanges_for_base) >= MIN_EXCHANGES_FOR_SYMBOL:
+            for market in markets:
+                arbitrage_symbols.add(market['symbol'])
+                
+        # Condition 2: The asset has multiple stablecoin pairs on the same exchange
+        if len(markets) > len(exchanges_for_base):
+             for market in markets:
+                arbitrage_symbols.add(market['symbol'])
+
+    print(f"Discovery complete. Found {len(arbitrage_symbols)} unique symbols across {len(base_currency_map)} assets to monitor.")
+    return list(arbitrage_symbols)
+
+
+# --- Main Orchestrator (MODIFIED) ---
+async def main():
+    print("Initializing Crypto Arbitrage Monitor...")
+
+    # Step 1: Initialize exchanges
+    exchanges = {}
+    for ex_id in EXCHANGES_TO_CHECK:
+        api_key = os.getenv(f"{ex_id.upper()}_API_KEY")
+        secret = os.getenv(f"{ex_id.upper()}_SECRET")
+        config = {'options': {'defaultType': 'spot'}, 'enableRateLimit': True}
+        if api_key and secret:
+            config['apiKey'] = api_key
+            config['secret'] = secret
+        exchanges[ex_id] = getattr(ccxt_async, ex_id)(config)
+        
+    manager = MarketDataManager([], PROFIT_THRESHOLD) # Start with an empty symbol list
+    
+    try:
+        # Step 2: Load all market data first
+        all_markets = await manager.load_all_markets(exchanges)
+
+        # Step 3: Dynamically discover symbols to check
+        symbols_to_check = discover_arbitrage_symbols(all_markets)
+        if not symbols_to_check:
+            print("No potential arbitrage symbols found. Exiting.")
+            return
+            
+        manager.symbols_to_watch = symbols_to_check # Update the manager with the dynamic list
+
+        # Step 4: Create and run tasks as before
+        tasks = [poll_tickers_for_exchange(manager, ex_obj) for ex_obj in exchanges.values()]
+        tasks.append(periodic_report_task(manager))
+
+        print(f"\nStarting {len(exchanges)} exchange pollers. Monitoring for opportunities...")
+        print(f"An instant alert will be shown for profits > {PROFIT_THRESHOLD}%.")
+        print(f"A summary of the top 3 price differences will be shown every {REPORT_INTERVAL} seconds.")
+        print("Press Ctrl+C to stop the bot.")
+        
+        await asyncio.gather(*tasks)
+
+    finally:
+        print("\nClosing all exchange connections gracefully...")
+        close_tasks = [ex.close() for ex in exchanges.values()]
+        await asyncio.gather(*close_tasks, return_exceptions=True)
+        print("All resources released.")
+
+if __name__ == "__main__":
+    try:
+        # poll_tickers_for_exchange and other functions need to be defined
+        # ... copy paste them from your original code ...
+
+        async def poll_tickers_for_exchange(manager, exchange):
+            symbols_on_exchange = [s for s in manager.symbols_to_watch if s in manager.markets.get(exchange.id, {})]
+            
+            if not symbols_on_exchange:
+                return
+                
+            print(f"Starting Ticker polling for: {exchange.id.upper()} ({len(symbols_on_exchange)} symbols to monitor)")
+            
+            BATCH_SIZE = 100
+
+            while True:
+                try:
+                    combined_tickers = {}
+                    symbol_chunks = [symbols_on_exchange[i:i + BATCH_SIZE] for i in range(0, len(symbols_on_exchange), BATCH_SIZE)]
+
+                    for chunk in symbol_chunks:
+                        try:
+                            tickers_batch = await exchange.fetch_tickers(chunk)
+                            if isinstance(tickers_batch, dict):
+                                combined_tickers.update(tickers_batch)
+                            else:
+                                print(f"WARN: {exchange.id.upper()} returned non-dict data for a batch. Skipping.")
+                        except Exception as e:
+                            print(f"WARN: A batch for {exchange.id.upper()} failed: {e}. Continuing with next batch.")
+                        await asyncio.sleep(exchange.rateLimit / 1000)
+
+                    for symbol, ticker in combined_tickers.items():
+                        best_bid = ticker.get('bid')
+                        best_ask = ticker.get('ask')
+
+                        # --- START OF FIX: Volume Check ---
+                        if best_bid is None or best_ask is None or best_ask <= 0:
+                            continue
+
+                        volume_24h = ticker.get('quoteVolume')
+                        if volume_24h is None or volume_24h < MIN_24H_VOLUME_USD:
+                            continue # Skip illiquid market
+                        # --- END OF FIX ---
+
+                        # If the checks pass, send the data for analysis.
+                        await manager.update_and_analyze(exchange.id, symbol, best_bid, best_ask)
+                    
+                    await asyncio.sleep(2)
+
+                except Exception as e:
+                     if isinstance(e, (ccxt.NotSupported, ccxt.ExchangeError)):
+                         await poll_tickers_one_by_one(manager, exchange, symbols_on_exchange)
+                     else:
+                        print(f"ERROR in {exchange.id.upper()} poller main loop: {type(e).__name__} - {e}. Retrying in 15s...")
+                        await asyncio.sleep(15)
+        
+        async def poll_tickers_one_by_one(manager, exchange, symbols_on_exchange):
+            print(f"INFO: {exchange.id.upper()} does not support bulk tickers. Switching to individual polling.")
+            while True:
+                try:
+                    for symbol in symbols_on_exchange:
+                        try:
+                            ticker = await exchange.fetch_ticker(symbol)
+                            best_bid = ticker.get('bid')
+                            best_ask = ticker.get('ask')
+
+                            # --- START OF FIX: Volume Check ---
+                            if best_bid is None or best_ask is None or best_ask <= 0:
+                                continue
+
+                            volume_24h = ticker.get('quoteVolume')
+                            if volume_24h is None or volume_24h < MIN_24H_VOLUME_USD:
+                                continue # Skip illiquid market
+                            # --- END OF FIX ---
+
+                            await manager.update_and_analyze(exchange.id, symbol, best_bid, best_ask)
+
+                        except Exception:
+                            # Silently pass on single symbol failures to not stop the whole loop.
+                            pass
+                    
+                    await asyncio.sleep(2)
+                except Exception as e:
+                    print(f"ERROR in {exchange.id.upper()} individual poller: {type(e).__name__} - {e}. Reconnecting in 15s...")
+                    await asyncio.sleep(15)
+                    break
+        
+        async def periodic_report_task(manager):
+            while True:
+                await asyncio.sleep(REPORT_INTERVAL)
+                async with manager.lock:
+                    opportunities_to_report = list(manager.current_opportunities)
+                    manager.current_opportunities.clear()
+                if not opportunities_to_report:
+                    print(f"--- ({time.strftime('%H:%M:%S')}) Status: System running. No new market data in the last {REPORT_INTERVAL}s. ---")
+                    continue
+                sorted_opportunities = sorted(opportunities_to_report, key=lambda x: x['profit_pct'], reverse=True)
+                unique_opportunities = {}
+                for op in sorted_opportunities:
+                    key = (op['buy_symbol'], op['buy_exchange'], op['sell_symbol'], op['sell_exchange'])
+                    if key not in unique_opportunities:
+                        unique_opportunities[key] = op
+                top_opportunities = list(unique_opportunities.values())[:3]
+                print("\n" + "-"*30 + f" TOP 3 DIFFERENCES ({time.strftime('%H:%M:%S')}) " + "-"*30)
+                print(f"{'ASSET':<8} | {'BUY VIA':<22} | {'SELL VIA':<22} | {'PROFIT %':<10} | {'NOTES'}")
+                print("-"*95)
+                for op in top_opportunities:
+                    buy_info = f"{op['buy_exchange'].upper()} @ {op['buy_price']:.4f} ({op['buy_symbol']})"
+                    sell_info = f"{op['sell_exchange'].upper()} @ {op['sell_price']:.4f} ({op['sell_symbol']})"
+                    profit_str = f"{op['profit_pct']:>8.4f}%"
+                    note = "Swap required" if op['requires_swap'] else ""
+                    print(f"{op['base_symbol']:<8} | {buy_info:<22} | {sell_info:<22} | {profit_str:<10} | {note}")
+                print("-" * 95 + "\n")
+
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nShutdown signal received.")
+        print(ASCII_FAREWELL)
